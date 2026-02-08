@@ -30,12 +30,11 @@
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // --- INN LINES KO ADD KAREIN (Memory fix ke liye) ---
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
-  experimental: { webpackBuildWorker: false }, 
-  // --------------------------------------------------
-
+  // Turbopack ko error dene se rokne ke liye khali object
+  turbopack: {}, 
+  
+  // experimental ke andar se webpackBuildWorker hata dein agar wo error de raha hai
+  
   async headers() {
     return [
       {
