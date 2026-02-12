@@ -1,22 +1,54 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { useSession, signOut } from "next-auth/react";
 
-export default function OmliApp() {
+export default function KoKoApp() {
+  const { data: session, status: sessionStatus } = useSession();
   const [userName, setUserName] = useState("");
+  const [userEmail, setUserEmail] = useState("");
   const [isStarted, setIsStarted] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [status, setStatus] = useState("Omli is ready! 🐧");
-  const [bubble, setBubble] = useState("Hi! I'm Omli. Let's talk!");
+  const [status, setStatus] = useState("KoKo is ready! 🐧");
+  const [bubble, setBubble] = useState("Hi! I'm KoKo. Let's play together! ✨");
   const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
 
   const ttsRef = useRef<any>(null);
   const recognitionRef = useRef<any>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const messagesRef = useRef<{ role: string, content: string }[]>([]);
+  const audioQueueRef = useRef<Promise<any>>(Promise.resolve());
 
   useEffect(() => {
-    const savedName = localStorage.getItem("omli_user_name");
-    const savedChat = localStorage.getItem("omli_v3_chat");
-    if (savedChat) setMessages(JSON.parse(savedChat));
+    if (sessionStatus === "loading") return;
+    const savedName = localStorage.getItem("userName");
+    const savedEmail = localStorage.getItem("userEmail");
+    let finalName = savedName;
+    let finalEmail = savedEmail;
+
+    if (session?.user) {
+      finalName = session.user.name || "";
+      finalEmail = session.user.email || "";
+      localStorage.setItem("userName", finalName);
+      localStorage.setItem("userEmail", finalEmail);
+    }
+
+    if (!finalName || !finalEmail) {
+      window.location.href = "/login";
+      return;
+    }
+
+    setUserName(finalName);
+    setUserEmail(finalEmail);
+    setIsStarted(true);
+
+    const chatKey = `KoKo_chat_${finalEmail}`;
+    const savedChat = localStorage.getItem(chatKey);
+    if (savedChat) {
+      const parsed = JSON.parse(savedChat);
+      setMessages(parsed);
+      messagesRef.current = parsed;
+    }
 
     async function init() {
       try {
@@ -31,126 +63,202 @@ export default function OmliApp() {
           const recognition = new SpeechRecognition();
           recognition.onresult = (e: any) => {
             setIsListening(false);
-            handleOmliLogic(e.results[0][0].transcript);
+            let transcript = e.results[0][0].transcript;
+            const wordsToFix = ["google", "coco", "gogo", "kuku", "kokoro"]; 
+            wordsToFix.forEach(word => {
+              const regex = new RegExp(word, "gi");
+              transcript = transcript.replace(regex, "KoKo");
+            });
+            handleKoKoLogic(transcript);
           };
           recognition.onend = () => setIsListening(false);
           recognitionRef.current = recognition;
         }
         setStatus("Ready! 🎤");
+
+        if (!savedChat) {
+          handleKoKoLogic(`Hi, my name is ${finalName}.`, [{ role: "user", content: `Hi, my name is ${finalName}. Introduce yourself as KoKo, my voice-enabled smart buddy. IMPORTANT: Always keep your answers very short, under 3 sentences ` }]);
+        }
       } catch (err) { setStatus("Engine Error ❌"); }
     }
     init();
-  }, []);
+  }, [session, sessionStatus]);
 
-  const handleOmliLogic = async (text: string, forceHistory?: any[]) => {
+  const handleKoKoLogic = async (text: string, forceHistory?: any[]) => {
     if (!text || text.trim().length < 2) return;
     setStatus("Thinking... ✨");
-
-    const currentHistory = forceHistory || [...messages, { role: "user", content: text }];
-    setMessages(currentHistory);
-
+    const newHistory = forceHistory || [...messagesRef.current, { role: "user", content: text }];
+    setMessages(newHistory);
+    messagesRef.current = newHistory;
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ history: currentHistory.slice(-15) }) 
+        body: JSON.stringify({ history: newHistory.slice(-15) }) 
       });
-
-      const data = await res.json();
-      const aiText = data.choices[0].message.content;
-      const cleanText = aiText.replace(/\*.*?\*/g, '').trim();
-      setBubble(cleanText);
-
-      const finalHistory = [...currentHistory, { role: "assistant", content: cleanText }];
-      setMessages(finalHistory);
-      localStorage.setItem("omli_v3_chat", JSON.stringify(finalHistory));
-
-      if (videoRef.current) {
-        videoRef.current.currentTime = 0;
-        videoRef.current.play();
+      if (!res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let aiFullText = "";
+      let audioBuffer = ""; 
+      if (videoRef.current) { videoRef.current.currentTime = 0; videoRef.current.play(); }
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ") && line !== "data: [DONE]") {
+            try {
+              const json = JSON.parse(line.replace("data: ", ""));
+              const content = json.choices[0].delta?.content || "";
+              aiFullText += content;
+              audioBuffer += content;
+              setBubble(aiFullText);
+              const words = audioBuffer.trim().split(/\s+/);
+              if (/[.?!]/.test(content) || (content.includes(",") && words.length > 6) || words.length > 10) {
+                const textToSpeak = audioBuffer.trim();
+                if (textToSpeak.length > 0) {
+                    audioBuffer = ""; 
+                    audioQueueRef.current = audioQueueRef.current.then(() => speakText(textToSpeak));
+                }
+              }
+            } catch (e) {}
+          }
+        }
       }
-
-      const { sharedAudioPlayer } = await import("speech-to-speech");
-      const result = await ttsRef.current.synthesize(cleanText);
-      sharedAudioPlayer.addAudioIntoQueue(result.audio, result.sampleRate);
-
-      setTimeout(() => {
-        if (videoRef.current) videoRef.current.pause();
+      if (audioBuffer.trim()) {
+        const remainingText = audioBuffer.trim();
+        audioQueueRef.current = audioQueueRef.current.then(() => speakText(remainingText));
+      }
+      const finalChat = [...messagesRef.current, { role: "assistant", content: aiFullText.trim() }];
+      setMessages(finalChat);
+      messagesRef.current = finalChat;
+      localStorage.setItem(`KoKo_chat_${userEmail}`, JSON.stringify(finalChat));
+      audioQueueRef.current.then(() => {
         setStatus("Ready! 🎤");
-      }, Math.max(3000, cleanText.length * 85));
-
+        setTimeout(() => { if (videoRef.current) videoRef.current.pause(); }, 1500);
+      });
     } catch (err) { setStatus("Error! ❌"); }
   };
 
-  const startApp = () => {
-    if (!userName.trim()) return alert("Enter name!");
-    localStorage.setItem("omli_user_name", userName);
-    setIsStarted(true);
-    // Setting name context initially
-    handleOmliLogic(`Hi, my name is ${userName}. Introduce yourself briefly.`, [{ role: "user", content: `Hi, my name is ${userName}.` }]);
+  const speakText = async (text: string): Promise<void> => {
+    if (!text.trim()) return;
+    const { sharedAudioPlayer } = await import("speech-to-speech");
+    const result = await ttsRef.current.synthesize(text);
+    sharedAudioPlayer.addAudioIntoQueue(result.audio, result.sampleRate);
+    return new Promise((resolve) => { setTimeout(resolve, text.length * 60); });
   };
 
-  const toggleMic = () => {
-    if (isListening) recognitionRef.current?.stop();
-    else {
-      if (videoRef.current) videoRef.current.pause();
-      recognitionRef.current?.start();
-      setIsListening(true);
-      setStatus("Listening... 🎧");
-    }
+  const handleLogout = () => {
+    localStorage.clear();
+    setMessages([]);
+    messagesRef.current = [];
+    signOut({ callbackUrl: "/login" });
   };
+
+  if (!isStarted) return null;
 
   return (
     <div style={styles.container}>
-      {!isStarted ? (
-        <div style={styles.card}>
-          <div style={styles.emojiLarge}>🐧</div>
-          <h1 style={styles.title}>Omli</h1>
-          <p style={styles.subtitle}>Your AI Buddy</p>
-          <input 
-            style={styles.input} 
-            value={userName} 
-            onChange={(e) => setUserName(e.target.value)} 
-            placeholder="Enter your name..." 
-          />
-          <button style={styles.button} onClick={startApp}>START 🚀</button>
-        </div>
-      ) : (
-        <div style={styles.mainContent}>
-          <div style={styles.chatBubble}>
-            <p style={styles.bubbleText}>{bubble}</p>
-            <div style={styles.bubbleArrow}></div>
+      <style>{`
+        @keyframes float { 0%, 100% { transform: translate(0, 0) rotate(0deg); } 50% { transform: translate(20px, -30px) rotate(10deg); } }
+        @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0.7; } }
+      `}</style>
+
+      <div style={styles.shape('120px', '5%', '5%', '0s', '#f0abfc', 'circle')}></div>
+      <div style={styles.shape('80px', '85%', '85%', '2s', '#c084fc', 'square')}></div>
+      <div style={styles.shape('100px', '15%', '85%', '4s', '#fbcfe8', 'circle')}></div>
+      <div style={styles.shape('60px', '80%', '10%', '1s', '#f472b6', 'triangle')}></div>
+
+      <div style={styles.leftPanel}>
+        <p style={styles.panelTitle}>EXPLORE 🚀</p>
+        <div style={styles.glassCard}>📖 Tell me a Story</div>
+        <div style={styles.glassCard}>🚀 Science Facts</div>
+        <div style={styles.glassCard}>🧩 Solve a Puzzle</div>
+        <div style={styles.glassCard}>🌍 Space Mysteries</div>
+      </div>
+
+      <div style={styles.rightPanel}>
+        <p style={styles.panelTitle}>RECENT HISTORY 💬</p>
+        {messages.length > 0 ? messages.slice(-6).reverse().map((msg, i) => (
+          <div key={i} style={styles.historyCard}>
+            <span style={{color: msg.role === 'user' ? '#ec4899' : '#701a75', fontWeight: 'bold'}}>
+              {msg.role === 'user' ? 'Me: ' : 'KoKo: '}
+            </span>
+            {msg.content.substring(0, 25)}...
           </div>
-          <div style={styles.videoWrapper}>
-            <video ref={videoRef} src="/omli-listen.mp4" style={styles.videoElement} muted loop playsInline />
-          </div>
-          <p style={{...styles.status, color: isListening ? '#ef4444' : '#ec4899'}}>{status}</p>
-          <button style={{...styles.micBtn, backgroundColor: isListening ? '#ef4444' : '#ec4899'}} onClick={toggleMic}>
-            {isListening ? '🎧' : '🎤'}
-          </button>
+        )) : <p style={{fontSize: '12px', color: '#999'}}>No history yet!</p>}
+      </div>
+
+      <div style={styles.header}>
+        <h1 style={styles.title}>KoKo Buddy! ✨</h1>
+        <div style={styles.userSection}>
+          <span style={styles.welcomeText}>Welcome, <strong>{userName.toUpperCase()}</strong></span>
+          <button onClick={handleLogout} style={styles.headerLogoutBtn}>LOGOUT</button>
         </div>
-      )}
+      </div>
+
+      <div style={styles.mainContent}>
+        <div style={styles.chatBubble}>
+          <p style={styles.bubbleText}>{bubble}</p>
+          <div style={styles.bubbleArrow}></div>
+        </div>
+
+        <div style={styles.videoWrapper}>
+          <video ref={videoRef} src="/KoKo-listen.mp4" style={styles.videoElement} muted loop playsInline />
+        </div>
+
+        <div style={styles.statusContainer}>
+          <div style={{...styles.pulse, backgroundColor: isListening ? '#ef4444' : '#10b981'}}></div>
+          <p style={{...styles.statusText, color: isListening ? '#ef4444' : '#701a75'}}>{status}</p>
+        </div>
+
+        <button 
+          style={{...styles.micBtn, transform: isListening ? 'scale(1.1)' : 'scale(1)', backgroundColor: isListening ? '#ef4444' : '#701a75'}} 
+          onClick={() => {
+            if (isListening) recognitionRef.current?.stop();
+            else { recognitionRef.current?.start(); setIsListening(true); setStatus("Listening... 🎧"); }
+          }}>
+          {isListening ? '🎧' : '🎤'}
+        </button>
+      </div>
     </div>
   );
 }
 
 const styles: any = {
-  container: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: '#fdf2f8', padding: '20px' },
-  card: { backgroundColor: 'white', padding: '50px', borderRadius: '50px', textAlign: 'center', boxShadow: '0 25px 50px rgba(0,0,0,0.1)', borderTop: '10px solid #ec4899', width: '320px' },
-  emojiLarge: { fontSize: '100px', marginBottom: '20px' },
-  title: { fontSize: '48px', fontWeight: '900', color: '#ec4899', margin: '0' },
-  subtitle: { color: '#9ca3af', fontWeight: 'bold', fontSize: '12px', marginBottom: '30px', textTransform: 'uppercase', letterSpacing: '1px' },
-  input: { width: '100%', padding: '15px', borderRadius: '20px', border: '3px solid #fce7f3', textAlign: 'center', fontSize: '18px', marginBottom: '20px', color: '#831843', fontWeight: 'bold' },
-  button: { width: '100%', padding: '15px', borderRadius: '20px', border: 'none', backgroundColor: '#ec4899', color: 'white', fontSize: '20px', fontWeight: 'bold', cursor: 'pointer' },
-  mainContent: { display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', maxWidth: '400px' },
-  chatBubble: { backgroundColor: 'white', padding: '30px', borderRadius: '40px', position: 'relative', marginBottom: '40px', width: '100%', minHeight: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '4px solid #fce7f3' },
-  bubbleText: { fontSize: '22px', fontWeight: 'bold', color: '#831843', textAlign: 'center', margin: '0', lineHeight: '1.3' },
-  bubbleArrow: { position: 'absolute', bottom: '-18px', left: '50%', transform: 'translateX(-50%) rotate(45deg)', width: '30px', height: '30px', backgroundColor: 'white', borderRight: '4px solid #fce7f3', borderBottom: '4px solid #fce7f3' },
-  videoWrapper: { width: '280px', height: '280px', borderRadius: '50%', overflow: 'hidden', border: '12px solid white', marginBottom: '20px', backgroundColor: 'white' },
+  container: { position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', background: 'linear-gradient(135deg, #fdf2f8 0%, #fae8ff 100%)', padding: '30px 20px', overflow: 'hidden', fontFamily: '"Comic Sans MS", cursive, sans-serif' },
+  shape: (size: string, top: string, left: string, delay: string, color: string, type: string) => ({ position: 'absolute', width: size, height: size, backgroundColor: color, opacity: 0.2, top, left, borderRadius: type === 'circle' ? '50%' : '20%', transform: type === 'triangle' ? 'rotate(45deg)' : 'none', animation: `float 10s infinite ease-in-out ${delay}`, zIndex: 0 }),
+  
+  leftPanel: { position: 'absolute', left: '30px', top: '150px', width: '210px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1 },
+  panelTitle: { color: '#701a75', fontSize: '20px', fontWeight: '950', letterSpacing: '1px', marginBottom: '5px', opacity: 0.8 },
+  glassCard: { padding: '18px', background: 'rgba(255,255,255,0.7)', borderRadius: '22px', border: '2px solid white', color: '#831843', fontWeight: 'bold', fontSize: '18px', boxShadow: '0 8px 20px rgba(112, 26, 117, 0.05)', backdropFilter: 'blur(10px)' },
+  rightPanel: { position: 'absolute', right: '60px', top: '150px', width: '280px', display: 'flex', flexDirection: 'column', gap: '12px', zIndex: 1 },
+  historyCard: { padding: '16px', background: 'rgba(255,255,255,0.5)', borderRadius: '22px', color: '#4b5563', fontSize: '14px', border: '1px solid white', backdropFilter: 'blur(5px)', marginBottom: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.03)', transition: '0.3s' },
+
+  header: { width: '100%', maxWidth: '800px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px', backgroundColor: 'rgba(255,255,255,0.7)', padding: '15px 25px', borderRadius: '25px', border: '2px solid white', backdropFilter: 'blur(10px)', zIndex: 1 },
+  title: { fontSize: '24px', color: '#ec4899', margin: '0', fontWeight: '900' },
+  userSection: { display: 'flex', alignItems: 'center', gap: '20px' },
+  welcomeText: { color: '#831843', fontSize: '16px', fontWeight: '500' },
+  headerLogoutBtn: { backgroundColor: '#ec4899', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '15px', fontWeight: 'bold', fontSize: '18px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(236, 72, 153, 0.3)' },
+  
+  mainContent: { display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', maxWidth: '600px', zIndex: 1 },
+  chatBubble: { backgroundColor: 'white', padding: '30px 40px', borderRadius: '45px', position: 'relative', marginBottom: '35px', width: '100%', minHeight: '130px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '6px solid #fce7f3', boxShadow: '0 15px 40px rgba(0,0,0,0.04)' },
+  bubbleText: { fontSize: '24px', fontWeight: '900', color: '#701a75', textAlign: 'center', margin: '0', lineHeight: '1.4' },
+  bubbleArrow: { position: 'absolute', bottom: '-22px', left: '50%', transform: 'translateX(-50%) rotate(45deg)', width: '35px', height: '35px', backgroundColor: 'white', borderRight: '6px solid #fce7f3', borderBottom: '6px solid #fce7f3' },
+  videoWrapper: { width: '250px', height: '250px', borderRadius: '50%', overflow: 'hidden', border: '12px solid white', marginBottom: '35px', boxShadow: '0 20px 50px rgba(112, 26, 117, 0.15)', backgroundColor: 'white' },
   videoElement: { width: '100%', height: '100%', objectFit: 'cover' },
-  status: { fontWeight: '900', fontSize: '13px', letterSpacing: '2px', marginBottom: '25px', textTransform: 'uppercase' },
-  micBtn: { width: '100px', height: '100px', borderRadius: '50%', border: '8px solid white', color: 'white', fontSize: '40px', cursor: 'pointer' }
+  statusContainer: { display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '30px' },
+  pulse: { width: '15px', height: '15px', borderRadius: '50%', animation: 'pulse 1.5s infinite' },
+  statusText: { fontWeight: '900', fontSize: '15px', textTransform: 'uppercase' },
+  micBtn: { width: '120px', height: '120px', borderRadius: '50%', border: '10px solid white', color: 'white', fontSize: '50px', cursor: 'pointer', boxShadow: '0 10px 25px rgba(0,0,0,0.1)' }
 };
+
+
+
+
+
 
 
 
