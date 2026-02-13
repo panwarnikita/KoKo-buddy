@@ -72,7 +72,10 @@
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Turbopack ko explicitly empty rakhein ya hata dein
+  // Turbopack ko khali rakhne se Next.js error nahi dega
+  experimental: {
+    turbo: {}
+  },
   async headers() {
     return [
       {
@@ -87,6 +90,7 @@ const nextConfig = {
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
+        ...config.resolve.fallback,
         fs: false,
         path: false,
         child_process: false,
@@ -99,4 +103,3 @@ const nextConfig = {
 };
 
 export default nextConfig;
-
