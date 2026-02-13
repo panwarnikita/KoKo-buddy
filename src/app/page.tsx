@@ -53,6 +53,17 @@ export default function KoKoApp() {
     async function init() {
       try {
         const { TTSLogic, sharedAudioPlayer } = await import("speech-to-speech");
+        
+
+        const resumeAudio = async () => {
+          const context = (sharedAudioPlayer as any).audioContext;
+          if (context && context.state === 'suspended') {
+            await context.resume();
+          }
+        };
+
+        window.addEventListener('click', resumeAudio, { once: true });
+
         sharedAudioPlayer.configure({ autoPlay: true });
         const tts = new TTSLogic({ voiceId: "en_US-hfc_female-medium", warmUp: true });
         await tts.initialize();
@@ -76,12 +87,11 @@ export default function KoKoApp() {
         }
         setStatus("Ready! 🎤");
 
-        if (!savedChat) {
-          handleKoKoLogic(`Hi, my name is ${finalName}.`, [{ role: "user", content: `Hi, my name is ${finalName}. Introduce yourself as KoKo, my voice-enabled smart buddy. IMPORTANT: Always keep your answers very short, under 3 sentences ` }]);
-        }
       } catch (err) { setStatus("Engine Error ❌"); }
     }
     init();
+    
+    return () => window.removeEventListener('click', () => {});
   }, [session, sessionStatus]);
 
   const handleKoKoLogic = async (text: string, forceHistory?: any[]) => {
@@ -145,9 +155,16 @@ export default function KoKoApp() {
   const speakText = async (text: string): Promise<void> => {
     if (!text.trim()) return;
     const { sharedAudioPlayer } = await import("speech-to-speech");
+    
+    // Zaroori: Audio ko resume karna agar browser ne block kiya ho
+    const context = (sharedAudioPlayer as any).audioContext;
+    if (context && context.state === 'suspended') {
+      await context.resume();
+    }
+
     const result = await ttsRef.current.synthesize(text);
     sharedAudioPlayer.addAudioIntoQueue(result.audio, result.sampleRate);
-    return new Promise((resolve) => { setTimeout(resolve, text.length * 60); });
+    return new Promise((resolve) => { setTimeout(resolve, text.length * 70); });
   };
 
   const handleLogout = () => {
@@ -216,7 +233,12 @@ export default function KoKoApp() {
 
         <button 
           style={{...styles.micBtn, transform: isListening ? 'scale(1.1)' : 'scale(1)', backgroundColor: isListening ? '#ef4444' : '#701a75'}} 
-          onClick={() => {
+          onClick={async () => {
+            // Audio context ko manual resume karna zaroori hai click par
+            const { sharedAudioPlayer } = await import("speech-to-speech");
+            const context = (sharedAudioPlayer as any).audioContext;
+            if (context && context.state === 'suspended') await context.resume();
+
             if (isListening) recognitionRef.current?.stop();
             else { recognitionRef.current?.start(); setIsListening(true); setStatus("Listening... 🎧"); }
           }}>
@@ -230,19 +252,16 @@ export default function KoKoApp() {
 const styles: any = {
   container: { position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', background: 'linear-gradient(135deg, #fdf2f8 0%, #fae8ff 100%)', padding: '30px 20px', overflow: 'hidden', fontFamily: '"Comic Sans MS", cursive, sans-serif' },
   shape: (size: string, top: string, left: string, delay: string, color: string, type: string) => ({ position: 'absolute', width: size, height: size, backgroundColor: color, opacity: 0.2, top, left, borderRadius: type === 'circle' ? '50%' : '20%', transform: type === 'triangle' ? 'rotate(45deg)' : 'none', animation: `float 10s infinite ease-in-out ${delay}`, zIndex: 0 }),
-  
   leftPanel: { position: 'absolute', left: '30px', top: '150px', width: '210px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 1 },
   panelTitle: { color: '#701a75', fontSize: '20px', fontWeight: '950', letterSpacing: '1px', marginBottom: '5px', opacity: 0.8 },
   glassCard: { padding: '18px', background: 'rgba(255,255,255,0.7)', borderRadius: '22px', border: '2px solid white', color: '#831843', fontWeight: 'bold', fontSize: '18px', boxShadow: '0 8px 20px rgba(112, 26, 117, 0.05)', backdropFilter: 'blur(10px)' },
   rightPanel: { position: 'absolute', right: '60px', top: '150px', width: '280px', display: 'flex', flexDirection: 'column', gap: '12px', zIndex: 1 },
   historyCard: { padding: '16px', background: 'rgba(255,255,255,0.5)', borderRadius: '22px', color: '#4b5563', fontSize: '14px', border: '1px solid white', backdropFilter: 'blur(5px)', marginBottom: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.03)', transition: '0.3s' },
-
   header: { width: '100%', maxWidth: '800px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px', backgroundColor: 'rgba(255,255,255,0.7)', padding: '15px 25px', borderRadius: '25px', border: '2px solid white', backdropFilter: 'blur(10px)', zIndex: 1 },
   title: { fontSize: '24px', color: '#ec4899', margin: '0', fontWeight: '900' },
   userSection: { display: 'flex', alignItems: 'center', gap: '20px' },
   welcomeText: { color: '#831843', fontSize: '16px', fontWeight: '500' },
   headerLogoutBtn: { backgroundColor: '#ec4899', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '15px', fontWeight: 'bold', fontSize: '18px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(236, 72, 153, 0.3)' },
-  
   mainContent: { display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', maxWidth: '600px', zIndex: 1 },
   chatBubble: { backgroundColor: 'white', padding: '30px 40px', borderRadius: '45px', position: 'relative', marginBottom: '35px', width: '100%', minHeight: '130px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '6px solid #fce7f3', boxShadow: '0 15px 40px rgba(0,0,0,0.04)' },
   bubbleText: { fontSize: '24px', fontWeight: '900', color: '#701a75', textAlign: 'center', margin: '0', lineHeight: '1.4' },
@@ -254,9 +273,6 @@ const styles: any = {
   statusText: { fontWeight: '900', fontSize: '15px', textTransform: 'uppercase' },
   micBtn: { width: '120px', height: '120px', borderRadius: '50%', border: '10px solid white', color: 'white', fontSize: '50px', cursor: 'pointer', boxShadow: '0 10px 25px rgba(0,0,0,0.1)' }
 };
-
-
-
 
 
 
